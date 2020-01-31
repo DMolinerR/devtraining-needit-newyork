@@ -1,0 +1,224 @@
+<?xml version="1.0" encoding="UTF-8"?><record_update table="sys_script_include">
+    <sys_script_include action="INSERT_OR_UPDATE">
+        <access>package_private</access>
+        <active>true</active>
+        <api_name>x_58872_needit.CSP-SE-Privacy</api_name>
+        <caller_access/>
+        <client_callable>false</client_callable>
+        <description/>
+        <name>CSP-SE-Privacy</name>
+        <script><![CDATA[var CSPSEPrivacy = Class.create();
+CSPSEPrivacy.prototype = {
+    initialize: function() {},
+
+    /**SNDOC
+	* @name generateHtml
+	* @param {Boolean} [isUserLoggedIn] isUserLoggedIn Wether the user is logged in or not in the portal.
+	* @return {string} [generatedHtml] 
+    * @author Jorge GRC <Nov 2019>
+    */
+    generateHtml: function(isUserLoggedIn) {
+
+        // Query for the array of services and notices
+        // user NOT logged in -> show only PUBLIC notices
+        var servicesArray = this._getServiceElementsAndNotices(!isUserLoggedIn);
+        var sortedServices = this._sortServicesByLetter(servicesArray);
+        var generatedHtml = "<div>";
+        var servicesListHTML = "<div class=\"csp-element-listing\"><ul class=\"csp-service-list\">";
+        var lettersHTML = "";
+        var that = this;
+        var navigationLetters = {};
+
+        Object.keys(sortedServices).forEach(function(sectionLetter) {
+            var services = sortedServices[sectionLetter];
+            navigationLetters[sectionLetter] = ""; //TODO change this way of generating the letters
+            servicesListHTML += "<li class=\"csp-service-list-letter\"><a name=\"" + sectionLetter + "\"></a>" + sectionLetter + "</li>";
+            services.forEach(function(service) {
+                servicesListHTML += that._addServiceElementToHtml(service);
+            });
+            servicesListHTML += "<li class=\"csp-service-list-back-to-top\"><a title=\"\" href=\"#AZindex\" data-original-title=\"Back to the top of the page\">Back to top</a></li>";
+        });
+
+        servicesListHTML += "</div></ul>"; // Close the SE list
+        // TODO Generate the letters search
+        lettersHTML = this._composeNavigationLettersHTML(navigationLetters);
+        generatedHtml = generatedHtml + lettersHTML + servicesListHTML + "</div>"; // Close the content div
+
+        return generatedHtml;
+
+    },
+
+    /**
+     * Compose the HTML that will render the upper navigation bar with the letters.
+     * Users should be able to jump to different sections of the document with this bar.
+     * 
+     * @param {Object} letters A JS object whose keys are the letters enabling the Search.
+     * @returns {String} The HTML of the upper "navigation" bar with the letters.
+     * @author Jorge GRC <Nov 2019>
+     */
+    _composeNavigationLettersHTML: function(letters) {
+        var html = "<div name=\"AZindex\">";
+
+        var lettersArray = Object.keys(letters);
+        lettersArray.forEach(function(letter) {
+            var line = "<a href=\"#" + letter + "\">" + letter + "</a> - ";
+            html += line;
+        });
+        html = html.substring(0, html.length - 3); // Cut the last " - "
+        html += "</div>"; // Close content div
+
+        return html;
+    },
+
+    /**
+     * Creates a new JS object whose keys are letters containing an array of Services.
+     * They are all sorted for easy rendering alphabetically in sections.
+     * @param {Array} services Array of Services obtained from the server.
+     * @returns {Object} JS object whose keys are letters. They correspond to sections of services in the page.
+     * @author Jorge GRC <Nov 2019>
+     */
+    _sortServicesByLetter: function(services) {
+
+        var sorted = {};
+        services.forEach(function(service) {
+            servLetter = service.label[0].toUpperCase();
+            if (gs.nil(sorted[servLetter])) {
+                // First service with this letter
+                sorted[servLetter] = [service];
+            } else {
+                // An array of services with this same letter exists
+                sorted[servLetter].push(service);
+            }
+        });
+
+        return sorted;
+    },
+
+
+    /**
+     * 
+     * @param {Object} service 
+     * @author Jorge GRC <Nov 2019>
+     */
+    _addServiceElementToHtml: function(service) {
+        var html = "";
+
+        html += "<li><a href=\"/service-portal/service-element.do?name=" + service.urlAlias + "\">" + service.label + "</a></li>";
+        html += "<ul class=\"service-notices\">";
+        service.notices.forEach(function(notice) {
+            html += "<li><a href=" + notice.link + ">" + notice.number + ":</a> " + notice.label + "</li>";
+        });
+        html += "</ul>";
+
+        return html;
+    },
+
+    /**
+     * Returns an array with Service Elements and their corresponding
+     * Records of Processing Operations (Privacy Notices).
+     * @param {Boolean} publicNoticesOnly Wether it should return only SEs with
+     * PUBLIC (visible to non logged-in users) or all of them.
+     * @author Jorge GRC <Nov 2019>
+     */
+    _getServiceElementsAndNotices: function(publicNoticesOnly) {
+        // Join the tables Privacy Policy and Service Element to obtain
+        // all Privacy Notices in state "Published" that are related with
+        // a Service Element which is operative and active (redundant but just in case)
+        var grPrivacyNotice = new GlideRecord("u_privacy_policy");
+        var grSE = grPrivacyNotice.addJoinQuery("u_service_element");
+
+        grPrivacyNotice.addQuery("u_state", "published");
+        if (publicNoticesOnly) {
+            grPrivacyNotice.addQuery("u_used_by_general_public", true);
+        }
+        grSE.addQuery("u_lifecycle_phase", "Operation");
+        grSE.addQuery("u_active", "true");
+        grPrivacyNotice.orderBy("u_service_element");
+        grPrivacyNotice.orderBy("u_number");
+
+        grPrivacyNotice.query();
+
+        // Privacy Notices will be ordered by SE. Iterate and group them by Service
+        var seArray = [];
+        var currentSE, prevSE = "";
+        while (grPrivacyNotice.next()) {
+            currentSE = grPrivacyNotice.u_service_element.getDisplayValue();
+
+            if (currentSE != prevSE) {
+                // If the SE changed - new SE
+                seArray.push({
+                    label: currentSE,
+                    sysID: grPrivacyNotice.getValue("u_service_element"),
+                    urlAlias: grPrivacyNotice.u_service_element.u_url_alias,
+                    notices: [this._parsePrivacyNotice(grPrivacyNotice)]
+                });
+                // Add the first letter to the Available Letters array
+
+            } else {
+                // We are iterating through the same SE, covering all its Privacy Notices
+                // Push the current one to the array
+                var currNotice = this._parsePrivacyNotice(grPrivacyNotice);
+                var currArrayIndex = seArray.length - 1;
+                // Push the new Notice to the corresponding SE
+                seArray[currArrayIndex].notices.push(currNotice);
+            }
+
+            // Update the "previous service element" variable for the next iteration
+            prevSE = currentSE;
+        }
+
+        return seArray;
+    },
+
+    /**
+     * Returns a JavaScript object containing information about a Privacy Notice.
+     * @param {GlideRecord} grNotice The Privacy Notice to parse.
+     * @author Jorge GRC <Nov 2019>
+     */
+    _parsePrivacyNotice: function(grNotice) {
+        return {
+            number: grNotice.getDisplayValue(),
+            sysID: grNotice.getValue("sys_id"),
+            title: grNotice.getValue("u_short_description"),
+            alias: grNotice.getValue("u_alias"),
+            label: grNotice.u_alias == "main" ?
+                "Main Privacy Notice" : grNotice.getValue("u_short_description"),
+            link: this._generateNoticePortalLink(
+                grNotice.u_service_element.u_url_alias,
+                grNotice.getValue("u_alias")),
+            isPublic: grNotice.getValue("u_used_by_general_public") === "1" // true or false (Boolean) instead of Strings
+        };
+    },
+
+    /**
+     * 
+     * @param {String} serviceAlias 
+     * @param {String} noticeAlias 
+     * @author Jorge GRC <Nov 2019>
+     */
+    _generateNoticePortalLink: function(serviceAlias, noticeAlias) {
+        // /privacy-policy.do?se=guards
+        var link = "/service-portal/privacy-policy.do?se=" + serviceAlias;
+        if (!gs.nil(noticeAlias) && noticeAlias != "main") {
+            link += "&notice=" + noticeAlias;
+        }
+
+        return link;
+    },
+
+    type: 'CSP-SE-Privacy'
+};]]></script>
+        <sys_class_name>sys_script_include</sys_class_name>
+        <sys_created_by>admin</sys_created_by>
+        <sys_created_on>2019-12-19 13:32:36</sys_created_on>
+        <sys_id>b4ee53f12fb10010bc144f2e2c99b664</sys_id>
+        <sys_mod_count>6</sys_mod_count>
+        <sys_name>CSP-SE-Privacy</sys_name>
+        <sys_package display_value="NeedIt" source="x_58872_needit">6ead8e780f603200cd674f8ce1050ed1</sys_package>
+        <sys_policy>read</sys_policy>
+        <sys_scope display_value="NeedIt">6ead8e780f603200cd674f8ce1050ed1</sys_scope>
+        <sys_update_name>sys_script_include_b4ee53f12fb10010bc144f2e2c99b664</sys_update_name>
+        <sys_updated_by>admin</sys_updated_by>
+        <sys_updated_on>2019-12-19 13:38:27</sys_updated_on>
+    </sys_script_include>
+</record_update>
